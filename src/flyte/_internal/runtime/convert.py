@@ -6,7 +6,7 @@ import hashlib
 import inspect
 from dataclasses import dataclass
 from types import NoneType
-from typing import Any, Dict, List, Tuple, Union, get_args
+from typing import Any, Dict, List, Tuple, Union, get_args, get_origin
 
 from flyteidl2.core import execution_pb2, interface_pb2, literals_pb2
 from flyteidl2.task import common_pb2, task_definition_pb2
@@ -16,6 +16,16 @@ import flyte.storage as storage
 from flyte._context import ctx
 from flyte.models import ActionID, NativeInterface, TaskContext
 from flyte.types import TypeEngine, TypeTransformerFailedError
+
+
+def _is_variadic_tuple_type(t) -> bool:
+    """Check if a type is a variadic tuple (e.g., tuple[int, ...])."""
+    origin = get_origin(t)
+    if origin is tuple:
+        args = get_args(t)
+        if len(args) == 2 and args[1] is ...:
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -195,8 +205,16 @@ async def convert_from_inputs_to_native(native_interface: NativeInterface, input
 
 
 async def convert_from_native_to_outputs(o: Any, interface: NativeInterface, task_name: str = "") -> Outputs:
+    # Check if single output is a variadic tuple - if so, don't unpack it
+    is_single_variadic_tuple_output = (
+        len(interface.outputs) == 1
+        and isinstance(o, tuple)
+        and _is_variadic_tuple_type(next(iter(interface.outputs.values())))
+    )
+
     # Always make it a tuple even if it's just one item to simplify logic below
-    if not isinstance(o, tuple):
+    # But don't wrap variadic tuples - they're a single output value
+    if not isinstance(o, tuple) or is_single_variadic_tuple_output:
         o = (o,)
 
     if len(interface.outputs) == 0:

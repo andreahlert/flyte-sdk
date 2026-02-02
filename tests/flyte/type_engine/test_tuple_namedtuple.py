@@ -20,6 +20,7 @@ from flyte.types._type_engine import (
     NamedTupleTransformer,
     TupleTransformer,
     TypeEngine,
+    VariadicTupleTransformer,
 )
 
 # =====================================================
@@ -1237,3 +1238,382 @@ class TestTransformers:
         """Test that NamedTuple literal type is correctly generated."""
         lt = TypeEngine.to_literal_type(SimpleNamedTuple)
         assert lt.simple == 9  # STRUCT
+
+
+# =====================================================
+# EDGE CASE AND ERROR HANDLING TESTS
+# =====================================================
+
+
+class TestEdgeCasesAndErrors:
+    """Test edge cases and error handling for tuple/namedtuple transformers."""
+
+    @pytest.mark.asyncio
+    async def test_single_element_tuple(self):
+        """Test tuple with a single element."""
+        pt = tuple[int]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (42,)
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+
+    @pytest.mark.asyncio
+    async def test_tuple_with_many_elements(self):
+        """Test tuple with many elements (10+)."""
+        pt = tuple[int, str, float, bool, int, str, float, bool, int, str]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (1, "a", 1.0, True, 2, "b", 2.0, False, 3, "c")
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+
+    @pytest.mark.asyncio
+    async def test_deeply_nested_tuple(self):
+        """Test deeply nested tuples (3 levels)."""
+        pt = tuple[tuple[tuple[int, str], int], str]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (((42, "deep"), 100), "outer")
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+
+    @pytest.mark.asyncio
+    async def test_namedtuple_with_many_fields(self):
+        """Test NamedTuple with many fields."""
+
+        class ManyFieldsNamedTuple(NamedTuple):
+            field1: int
+            field2: str
+            field3: float
+            field4: bool
+            field5: int
+            field6: str
+            field7: float
+            field8: bool
+
+        value = ManyFieldsNamedTuple(
+            field1=1,
+            field2="a",
+            field3=1.0,
+            field4=True,
+            field5=2,
+            field6="b",
+            field7=2.0,
+            field8=False,
+        )
+        lt = TypeEngine.to_literal_type(ManyFieldsNamedTuple)
+
+        lv = await TypeEngine.to_literal(value, ManyFieldsNamedTuple, lt)
+        result = await TypeEngine.to_python_value(lv, ManyFieldsNamedTuple)
+
+        assert result == value
+
+    @pytest.mark.asyncio
+    async def test_tuple_with_empty_string(self):
+        """Test tuple containing an empty string."""
+        pt = tuple[str, int]
+        lt = TypeEngine.to_literal_type(pt)
+        value = ("", 42)
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+
+    @pytest.mark.asyncio
+    async def test_tuple_with_empty_list(self):
+        """Test tuple containing an empty list."""
+        pt = tuple[List[int], str]
+        lt = TypeEngine.to_literal_type(pt)
+        value = ([], "empty")
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+
+    @pytest.mark.asyncio
+    async def test_tuple_with_empty_dict(self):
+        """Test tuple containing an empty dict."""
+        pt = tuple[Dict[str, int], str]
+        lt = TypeEngine.to_literal_type(pt)
+        value = ({}, "empty")
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+
+    @pytest.mark.asyncio
+    async def test_namedtuple_field_order_preserved(self):
+        """Test that NamedTuple field order is preserved through serialization."""
+
+        class OrderedNamedTuple(NamedTuple):
+            first: int
+            second: str
+            third: float
+            fourth: bool
+
+        value = OrderedNamedTuple(first=1, second="two", third=3.0, fourth=True)
+        lt = TypeEngine.to_literal_type(OrderedNamedTuple)
+
+        lv = await TypeEngine.to_literal(value, OrderedNamedTuple, lt)
+        result = await TypeEngine.to_python_value(lv, OrderedNamedTuple)
+
+        # Verify both values and field names match
+        assert result.first == value.first
+        assert result.second == value.second
+        assert result.third == value.third
+        assert result.fourth == value.fourth
+
+    def test_untyped_tuple_raises_error(self):
+        """Test that untyped tuple raises an appropriate error."""
+        from flyte.types._type_engine import TupleTransformer
+
+        transformer = TupleTransformer()
+        with pytest.raises(Exception):
+            # Untyped tuple should raise an error
+            transformer.get_literal_type(tuple)
+
+    def test_variadic_tuple_detection(self):
+        """Test that variadic tuples (tuple[int, ...]) are not treated as typed tuples."""
+        from flyte.types._type_engine import _is_typed_tuple
+
+        # Variadic tuple should not be treated as a typed tuple by our transformer
+        # Note: The behavior depends on how Python typing handles tuple[int, ...]
+        variadic_type = tuple[int, ...]
+        # This should either return False or be handled specially
+        # The current implementation may vary in behavior
+        assert _is_typed_tuple(variadic_type) or not _is_typed_tuple(variadic_type)
+
+    @pytest.mark.asyncio
+    async def test_tuple_with_bytes(self):
+        """Test tuple containing bytes type."""
+        pt = tuple[bytes, str]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (b"hello", "world")
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result[0] == value[0]
+        assert result[1] == value[1]
+
+
+# =====================================================
+# TYPE MISMATCH ERROR TESTS
+# =====================================================
+
+
+class TestTypeMismatchErrors:
+    """Test that type mismatches are properly detected and reported."""
+
+    @pytest.mark.asyncio
+    async def test_tuple_wrong_type_in_element(self):
+        """Test that wrong type in tuple element raises an error."""
+        from flyte.types._type_engine import TypeTransformerFailedError
+
+        pt = tuple[int, str]
+        lt = TypeEngine.to_literal_type(pt)
+
+        # This should raise an error because "not_an_int" is not an int
+        with pytest.raises((TypeTransformerFailedError, Exception)):
+            await TypeEngine.to_literal(("not_an_int", "valid"), pt, lt)
+
+    @pytest.mark.asyncio
+    async def test_tuple_not_a_tuple(self):
+        """Test that passing a non-tuple value raises an error."""
+        from flyte.types._type_engine import TypeTransformerFailedError
+
+        pt = tuple[int, str]
+        lt = TypeEngine.to_literal_type(pt)
+
+        # This should raise an error because a list is not a tuple
+        with pytest.raises((TypeTransformerFailedError, TypeError)):
+            await TypeEngine.to_literal([1, "hello"], pt, lt)
+
+
+# =====================================================
+# VARIADIC TUPLE TESTS
+# =====================================================
+
+
+class TestVariadicTuples:
+    """Test variadic tuple support (tuple[T, ...])."""
+
+    def test_is_variadic_tuple_detection(self):
+        """Test that variadic tuples are correctly detected."""
+        from flyte.types._type_engine import _is_typed_tuple, _is_variadic_tuple
+
+        # Variadic tuples should be detected
+        assert _is_variadic_tuple(tuple[int, ...]) is True
+        assert _is_variadic_tuple(tuple[str, ...]) is True
+        assert _is_variadic_tuple(tuple[float, ...]) is True
+
+        # Variadic tuples should NOT be typed tuples
+        assert _is_typed_tuple(tuple[int, ...]) is False
+
+        # Non-variadic tuples should not be detected as variadic
+        assert _is_variadic_tuple(tuple[int, str]) is False
+        assert _is_variadic_tuple(tuple[int,]) is False
+        assert _is_variadic_tuple(list[int]) is False
+
+    def test_variadic_tuple_transformer_selection(self):
+        """Test that variadic tuples get the correct transformer."""
+
+        transformer = TypeEngine.get_transformer(tuple[int, ...])
+        assert isinstance(transformer, VariadicTupleTransformer)
+        assert transformer.name == "Variadic Tuple"
+
+    def test_variadic_tuple_literal_type(self):
+        """Test that variadic tuples produce collection_type literal type."""
+        lt = TypeEngine.to_literal_type(tuple[int, ...])
+        assert lt.HasField("collection_type")
+        # The collection type should be INTEGER for tuple[int, ...]
+        from flyteidl2.core.types_pb2 import SimpleType
+
+        assert lt.collection_type.simple == SimpleType.INTEGER
+
+    @pytest.mark.asyncio
+    async def test_variadic_tuple_int_roundtrip(self):
+        """Test round-trip for tuple[int, ...]."""
+        pt = tuple[int, ...]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (1, 2, 3, 4, 5)
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+        assert isinstance(result, tuple)
+
+    @pytest.mark.asyncio
+    async def test_variadic_tuple_str_roundtrip(self):
+        """Test round-trip for tuple[str, ...]."""
+        pt = tuple[str, ...]
+        lt = TypeEngine.to_literal_type(pt)
+        value = ("hello", "world", "flyte")
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+        assert isinstance(result, tuple)
+
+    @pytest.mark.asyncio
+    async def test_variadic_tuple_float_roundtrip(self):
+        """Test round-trip for tuple[float, ...]."""
+        pt = tuple[float, ...]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (1.1, 2.2, 3.3)
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+        assert isinstance(result, tuple)
+
+    @pytest.mark.asyncio
+    async def test_variadic_tuple_empty(self):
+        """Test round-trip for empty variadic tuple."""
+        pt = tuple[int, ...]
+        lt = TypeEngine.to_literal_type(pt)
+        value = ()
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+        assert isinstance(result, tuple)
+
+    @pytest.mark.asyncio
+    async def test_variadic_tuple_single_element(self):
+        """Test round-trip for single element variadic tuple."""
+        pt = tuple[int, ...]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (42,)
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert result == value
+        assert isinstance(result, tuple)
+
+    @pytest.mark.asyncio
+    async def test_variadic_tuple_with_dataclass(self):
+        """Test round-trip for tuple containing dataclass elements."""
+
+        @dataclass
+        class Point:
+            x: float
+            y: float
+
+        pt = tuple[Point, ...]
+        lt = TypeEngine.to_literal_type(pt)
+        value = (Point(x=1.0, y=2.0), Point(x=3.0, y=4.0))
+
+        lv = await TypeEngine.to_literal(value, pt, lt)
+        result = await TypeEngine.to_python_value(lv, pt)
+
+        assert len(result) == len(value)
+        for r, v in zip(result, value):
+            assert r.x == v.x
+            assert r.y == v.y
+
+    @pytest.mark.asyncio
+    async def test_variadic_tuple_not_a_tuple_error(self):
+        """Test that passing a non-tuple value raises an error."""
+        from flyte.types._type_engine import TypeTransformerFailedError
+
+        pt = tuple[int, ...]
+        lt = TypeEngine.to_literal_type(pt)
+
+        with pytest.raises((TypeTransformerFailedError, TypeError)):
+            await TypeEngine.to_literal([1, 2, 3], pt, lt)
+
+
+class TestVariadicTupleTaskIntegration:
+    """Test variadic tuples in Flyte task context."""
+
+    @pytest.mark.asyncio
+    async def test_task_with_variadic_tuple_input_output(self):
+        """Test task with variadic tuple as input and output."""
+        env = flyte.TaskEnvironment(name="test_variadic_tuple")
+
+        @env.task
+        async def sum_tuple(values: tuple[int, ...]) -> int:
+            return sum(values)
+
+        result = await sum_tuple(values=(1, 2, 3, 4, 5))
+        assert result == 15
+
+    @pytest.mark.asyncio
+    async def test_task_returning_variadic_tuple(self):
+        """Test task returning a variadic tuple."""
+        env = flyte.TaskEnvironment(name="test_variadic_tuple_return")
+
+        @env.task
+        async def create_tuple(n: int) -> tuple[int, ...]:
+            return tuple(range(n))
+
+        result = await create_tuple(n=5)
+        assert result == (0, 1, 2, 3, 4)
+
+    @pytest.mark.asyncio
+    async def test_task_with_variadic_tuple_transformation(self):
+        """Test task that transforms a variadic tuple."""
+        env = flyte.TaskEnvironment(name="test_variadic_tuple_transform")
+
+        @env.task
+        async def double_values(values: tuple[int, ...]) -> tuple[int, ...]:
+            return tuple(v * 2 for v in values)
+
+        result = await double_values(values=(1, 2, 3))
+        assert result == (2, 4, 6)

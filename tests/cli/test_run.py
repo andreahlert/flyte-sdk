@@ -773,3 +773,89 @@ def test_cli_run_with_nested_namedtuple(runner):
         if "I/O operation on closed file" in str(ve):
             return
         raise ve
+
+
+# ============================================================================
+# Additional tests for tuple/namedtuple list-format inputs and edge cases
+# ============================================================================
+
+
+def test_cli_run_with_tuple_list_format(runner):
+    """Test CLI run with tuple input in list format [value1, value2, value3]."""
+    try:
+        cmd = [
+            "--local",
+            str(TUPLE_INPUTS_PY),
+            "process_simple_tuple",
+            "--data",
+            json.dumps([42, "hello", 3.14]),  # List format instead of dict
+        ]
+        result = runner.invoke(run, cmd)
+        assert result.exit_code == 0, result.output
+    except ValueError as ve:
+        if "I/O operation on closed file" in str(ve):
+            return
+        raise ve
+
+
+def test_cli_run_with_nested_tuple_list_format(runner):
+    """Test CLI run with nested tuple input in list format."""
+    try:
+        cmd = [
+            "--local",
+            str(TUPLE_INPUTS_PY),
+            "process_nested_tuple",
+            "--data",
+            json.dumps([[10, 20], "nested"]),  # List format for nested tuple
+        ]
+        result = runner.invoke(run, cmd)
+        assert result.exit_code == 0, result.output
+    except ValueError as ve:
+        if "I/O operation on closed file" in str(ve):
+            return
+        raise ve
+
+
+def test_cli_run_with_namedtuple_default_altitude(runner):
+    """Test CLI run with NamedTuple that has a default value (altitude=0.0)."""
+    try:
+        # Coordinates has altitude with default=0.0, so we can omit it
+        cmd = [
+            "--local",
+            str(TUPLE_INPUTS_PY),
+            "process_coordinates",
+            "--coords",
+            json.dumps({"latitude": 37.7749, "longitude": -122.4194}),  # altitude omitted
+        ]
+        result = runner.invoke(run, cmd)
+        assert result.exit_code == 0, result.output
+    except ValueError as ve:
+        if "I/O operation on closed file" in str(ve):
+            return
+        raise ve
+
+
+def test_cli_run_with_tuple_wrong_element_count(runner):
+    """Test CLI run with tuple input with wrong number of elements."""
+    cmd = [
+        "--local",
+        str(TUPLE_INPUTS_PY),
+        "process_simple_tuple",
+        "--data",
+        json.dumps([42, "hello"]),  # Missing third element (float)
+    ]
+    result = runner.invoke(run, cmd)
+    assert result.exit_code != 0, "Should fail with wrong element count"
+
+
+def test_cli_run_with_tuple_missing_field(runner):
+    """Test CLI run with tuple input missing a required field."""
+    cmd = [
+        "--local",
+        str(TUPLE_INPUTS_PY),
+        "process_simple_tuple",
+        "--data",
+        json.dumps({"item_0": 42, "item_1": "hello"}),  # Missing item_2
+    ]
+    result = runner.invoke(run, cmd)
+    assert result.exit_code != 0, "Should fail with missing field"

@@ -859,7 +859,8 @@ class TupleTransformer(TypeTransformer[tuple]):
 
     def _model_to_tuple(self, model_instance: BaseModel, expected_type: Type[tuple]) -> tuple:
         """Convert a Pydantic model instance back to a tuple."""
-        field_names = list(model_instance.model_fields.keys())
+        # Access model_fields from the class, not the instance (Pydantic V2.11+ deprecation)
+        field_names = list(type(model_instance).model_fields.keys())
         return tuple(getattr(model_instance, name) for name in field_names)
 
     def get_literal_type(self, t: Type[tuple]) -> LiteralType:
@@ -1264,7 +1265,7 @@ def _is_typed_tuple(t: Type) -> bool:
     """
     Check if a type is a typed tuple (e.g., tuple[int, str] or typing.Tuple[int, str]).
 
-    This excludes NamedTuple and untyped tuple.
+    This excludes NamedTuple, untyped tuple, and variadic tuples.
     """
     if _is_named_tuple(t):
         return False
@@ -1276,6 +1277,98 @@ def _is_typed_tuple(t: Type) -> bool:
         if args and not (len(args) == 2 and args[1] is ...):
             return True
     return False
+
+
+def _is_variadic_tuple(t: Type) -> bool:
+    """
+    Check if a type is a variadic tuple (e.g., tuple[int, ...] or typing.Tuple[int, ...]).
+
+    Variadic tuples represent homogeneous sequences of arbitrary length.
+    """
+    origin = get_origin(t)
+    if origin is tuple or origin is Tuple:
+        args = get_args(t)
+        # Variadic tuples have exactly 2 args where the second is Ellipsis
+        if len(args) == 2 and args[1] is ...:
+            return True
+    return False
+
+
+class VariadicTupleTransformer(TypeTransformer[tuple]):
+    """
+    Transformer that handles variadic tuples like tuple[int, ...].
+
+    Variadic tuples are homogeneous sequences of arbitrary length, similar to lists
+    but immutable. This transformer stores them using Flyte's collection_type
+    (similar to ListTransformer) and converts them back to tuples on retrieval.
+    """
+
+    def __init__(self):
+        super().__init__("Variadic Tuple", tuple, enable_type_assertions=False)
+
+    @staticmethod
+    def get_element_type(t: Type) -> Type:
+        """
+        Return the element type T from tuple[T, ...].
+        """
+        args = get_args(t)
+        if len(args) == 2 and args[1] is ...:
+            return args[0]
+        raise ValueError(f"Expected variadic tuple type like tuple[T, ...], got {t}")
+
+    def get_literal_type(self, t: Type[tuple]) -> LiteralType:
+        """
+        Get the literal type for a variadic tuple.
+
+        Uses collection_type similar to lists since variadic tuples
+        are homogeneous sequences.
+        """
+        element_type = self.get_element_type(t)
+        sub_type = TypeEngine.to_literal_type(element_type)
+        return LiteralType(collection_type=sub_type)
+
+    async def to_literal(self, python_val: tuple, python_type: Type[tuple], expected: LiteralType) -> Literal:
+        """Convert a variadic tuple to a Flyte Literal."""
+        if not isinstance(python_val, tuple):
+            raise TypeTransformerFailedError(f"Expected a tuple but got {type(python_val)}")
+
+        element_type = self.get_element_type(python_type)
+        lit_list = [TypeEngine.to_literal(x, element_type, expected.collection_type) for x in python_val]
+
+        lit_list = await _run_coros_in_chunks(lit_list, batch_size=_TYPE_ENGINE_COROS_BATCH_SIZE)
+
+        return Literal(collection=LiteralCollection(literals=lit_list))
+
+    async def to_python_value(self, lv: Literal, expected_python_type: Type[tuple]) -> tuple:
+        """Convert a Flyte Literal back to a variadic tuple."""
+        if lv and lv.HasField("scalar") and lv.scalar.HasField("binary"):
+            return self.from_binary_idl(lv.scalar.binary, expected_python_type)  # type: ignore
+
+        try:
+            lits = lv.collection.literals
+        except AttributeError:
+            raise TypeTransformerFailedError(
+                f"The expected python type is '{expected_python_type}' but the received Flyte literal value "
+                f"is not a collection (Flyte's representation of variadic tuples)."
+            )
+
+        element_type = self.get_element_type(expected_python_type)
+        result = [TypeEngine.to_python_value(x, element_type) for x in lits]
+        result = await _run_coros_in_chunks(result, batch_size=_TYPE_ENGINE_COROS_BATCH_SIZE)
+        return tuple(result)
+
+    def guess_python_type(self, literal_type: LiteralType) -> Type[tuple]:
+        """
+        Guess the Python type from a literal type.
+
+        Note: This cannot distinguish between list[T] and tuple[T, ...] since
+        they use the same collection_type representation. We default to returning
+        the type as a variadic tuple when explicitly asked.
+        """
+        if literal_type.HasField("collection_type"):
+            element_type: Type = TypeEngine.guess_python_type(literal_type.collection_type)
+            return tuple[element_type, ...]  # type: ignore
+        raise ValueError(f"Variadic tuple transformer cannot reverse {literal_type}")
 
 
 def generate_attribute_list_from_dataclass_json_mixin(schema: dict, schema_name: typing.Any):
@@ -1422,6 +1515,7 @@ class TypeEngine(typing.Generic[T]):
     _ENUM_TRANSFORMER: typing.ClassVar[TypeTransformer] = EnumTransformer()
     _TUPLE_TRANSFORMER: typing.ClassVar[TypeTransformer] = TupleTransformer()
     _NAMEDTUPLE_TRANSFORMER: typing.ClassVar[TypeTransformer] = NamedTupleTransformer()
+    _VARIADIC_TUPLE_TRANSFORMER: typing.ClassVar[TypeTransformer] = VariadicTupleTransformer()
     lazy_import_lock: typing.ClassVar[threading.Lock] = threading.Lock()
 
     @classmethod
@@ -1474,6 +1568,10 @@ class TypeEngine(typing.Generic[T]):
         # Special handling for NamedTuple types (isinstance checks don't work for NamedTuple)
         if _is_named_tuple(python_type):
             return cls._NAMEDTUPLE_TRANSFORMER
+
+        # Special handling for variadic tuple types like tuple[int, ...]
+        if _is_variadic_tuple(python_type):
+            return cls._VARIADIC_TUPLE_TRANSFORMER
 
         # Special handling for typed tuple types like tuple[int, str]
         if _is_typed_tuple(python_type):
@@ -1560,13 +1658,13 @@ class TypeEngine(typing.Generic[T]):
 
     @classmethod
     def to_literal_checks(cls, python_val: typing.Any, python_type: Type[T], expected: LiteralType):
-        # Check for untyped tuples - typed tuples and NamedTuples are now supported
+        # Check for untyped tuples - typed tuples, NamedTuples, and variadic tuples are now supported
         if isinstance(python_val, tuple):
-            # Allow typed tuples and NamedTuples
-            if not (_is_typed_tuple(python_type) or _is_named_tuple(python_type)):
+            # Allow typed tuples, NamedTuples, and variadic tuples
+            if not (_is_typed_tuple(python_type) or _is_named_tuple(python_type) or _is_variadic_tuple(python_type)):
                 raise AssertionError(
                     "Untyped tuples are not a supported type for individual values in Flyte - got a tuple -"
-                    f" {python_val}. Use a typed tuple like tuple[int, str] or a NamedTuple instead."
+                    f" {python_val}. Use a typed tuple like tuple[int, str], tuple[int, ...], or a NamedTuple instead."
                     " If using named tuple in an inner task, please de-reference the"
                     " actual attribute that you want to use. For example, in NamedTuple('OP', x=int) then"
                     " return v.x, instead of v, even if this has a single element"

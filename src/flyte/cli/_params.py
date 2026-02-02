@@ -10,7 +10,7 @@ import re
 import sys
 import typing
 import typing as t
-from typing import Any, get_args
+from typing import get_args
 
 import rich_click as click
 import yaml
@@ -481,8 +481,7 @@ class JsonParamType(click.ParamType):
                 elif dataclasses.is_dataclass(arg):
                     from mashumaro.codecs.json import JSONDecoder
 
-                    decoder: JSONDecoder[Any] = JSONDecoder(arg)
-                    field_value = decoder.decode(json.dumps(field_value))
+                    field_value = JSONDecoder(arg).decode(json.dumps(field_value))
 
                 result.append(field_value)
             return tuple(result)
@@ -500,8 +499,10 @@ class JsonParamType(click.ParamType):
                 elif dataclasses.is_dataclass(arg):
                     from mashumaro.codecs.json import JSONDecoder
 
-                    decoder = JSONDecoder(arg)
-                    _val = decoder.decode(json.dumps(val))
+                    _val = JSONDecoder(arg).decode(json.dumps(val))
+                else:
+                    # For primitive types (int, str, float, bool, etc.), use the value as-is
+                    _val = val
                 result.append(_val)
             return tuple(result)
         else:

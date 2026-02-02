@@ -74,13 +74,16 @@ def extract_return_annotation(return_annotation: Union[Type, Tuple, None]) -> Di
     if hasattr(return_annotation, "__origin__") and return_annotation.__origin__ is tuple:  # type: ignore
         # Handle option 3
         # Task returns unnamed typing.Tuple
-        if len(return_annotation.__args__) == 1:  # type: ignore
-            raise TypeError("Tuples should be used to indicate multiple return values, found only one return variable.")
         ra = get_args(return_annotation)
+
+        # Handle variadic tuples like tuple[int, ...] - treat as single output
+        if len(ra) == 2 and ra[1] is Ellipsis:
+            return {default_output_name(): cast(Type, return_annotation)}
+
+        if len(ra) == 1:
+            raise TypeError("Tuples should be used to indicate multiple return values, found only one return variable.")
         annotations = {}
         for i, r in enumerate(ra):
-            if r is Ellipsis:
-                raise TypeError("Variable length tuples are not supported as return types.")
             if get_origin(r) is Literal:
                 annotations[default_output_name(i)] = literal_to_enum(cast(Type, r))
             else:
